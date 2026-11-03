@@ -18,12 +18,14 @@ PORTAL_PORT = 8000
 
 
 class Seat:
-    def __init__(self, name, host, port, student=None, ip=None):
+    def __init__(self, name, host, port, student=None, ip=None, public=None, label=None):
         self.name = name
         self.host = host
         self.port = port
         self.student = student
         self.ip = ip or host
+        self.public = public or name
+        self.label = label or name
 
 
 def build_seats(args):
@@ -39,9 +41,9 @@ def build_seats(args):
     for i, s in enumerate(roster, 1):
         name = "st%d" % i
         host, port = overrides.get(name, (s["ip"], PORTAL_PORT))
-        seats.append(Seat(name, host, port, s, s["ip"]))
+        seats.append(Seat(name, host, port, s, s["ip"], str(i), "Seat %d" % i))
     host, port = overrides.get("intr", ("10.0.0.66", PORTAL_PORT))
-    seats.append(Seat("intr", host, port, None, "10.0.0.66"))
+    seats.append(Seat("intr", host, port, None, "10.0.0.66", "guest", "Guest seat"))
     return seats
 
 
@@ -87,7 +89,7 @@ def all_status(seats):
 
 
 def make_handler(seats, title):
-    by_name = {s.name: s for s in seats}
+    by_name = {s.public: s for s in seats}
     with open(os.path.join(WEB, "seats.html"), encoding="utf-8") as f:
         picker = f.read()
 
@@ -104,14 +106,13 @@ def make_handler(seats, title):
         if req.path == "/seats/api":
             states = all_status(seats)
             return json_response({"title": title, "seats": [
-                {"name": s.name, "ip": s.ip, "state": states[s.name],
-                 "student": {"id": s.student["id"], "name": s.student["name"]}
-                 if s.student else None} for s in seats]})
+                {"id": s.public, "label": s.label, "state": states[s.name], "registered": bool(s.student)}
+                for s in seats]})
         if req.path == "/seats/pick":
             name = req.query.get("seat", "")
             if name == "auto":
                 states = all_status(seats)
-                free = [s.name for s in seats if s.student and states[s.name] == "free"]
+                free = [s.public for s in seats if s.student and states[s.name] == "free"]
                 if not free:
                     return redirect("/seats?full=1")
                 name = free[0]
@@ -125,26 +126,23 @@ def make_handler(seats, title):
         seat = chosen(req)
         if not seat:
             if req.path.startswith("/api/"):
-                return json_response({"stage": "login", "seat": "-", "server": "-", "error": "Pick a seat first.",
+                return json_response({"stage": "login", "error": "Pick a seat first.",
                                       "student": None, "question": None, "result": None}, 409)
             return redirect("/seats")
         try:
             status, ctype, body = forward(seat, req.method, req.path, req.body)
         except (OSError, http.client.HTTPException) as exc:
             if req.path.startswith("/api/"):
-                return json_response({"stage": "login", "seat": seat.ip, "server": "-",
-                                      "error": "Seat %s is offline (%s). Is run_portal.sh running?" % (seat.name, exc),
+                return json_response({"stage": "login",
+                                      "error": "%s is offline. Ask the examiner or pick another seat." % seat.label,
                                       "student": None, "question": None, "result": None}, 502)
             return html_response("<p style='font-family:sans-serif;padding:24px'>Seat %s is offline. "
-                                 "<a href='/seats/leave'>Pick another seat</a></p>" % html.escape(seat.name))
+                                 "<a href='/seats/leave'>Pick another seat</a></p>" % html.escape(seat.label))
         if ctype.startswith("text/html"):
-            who = ("for %s" % seat.student["name"]) if seat.student else "unregistered seat"
             bar = ("<div style=\"background:#1f5fae;color:#fff;font:13px system-ui,sans-serif;padding:8px 16px;"
-                   "display:flex;gap:12px;justify-content:center;flex-wrap:wrap\"><span>Public gateway · seat "
-                   "<b>%s</b> (%s) · %s</span><a href=\"/seats/leave\" style=\"color:#fff\">Change seat</a>"
-                   "</div>" % (seat.name, seat.ip, html.escape(who)))
-            hint = "<script>window.SEAT_ID=%s;</script>" % json.dumps(seat.student["id"] if seat.student else "")
-            body = body.decode("utf-8").replace("<body>", "<body>" + bar + hint, 1).encode("utf-8")
+                   "display:flex;gap:12px;justify-content:center;flex-wrap:wrap\"><span>Exam gateway · <b>%s</b>"
+                   "</span><a href=\"/seats/leave\" style=\"color:#fff\">Change seat</a></div>" % html.escape(seat.label))
+            body = body.decode("utf-8").replace("<body>", "<body>" + bar, 1).encode("utf-8")
         return status, ctype, body
     return handler
 

@@ -122,7 +122,8 @@ class HTTPServer:
                 status, ctype, body = json_response({"error": "internal error"}, 500)
                 extra = {}
             head = ("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n"
-                    "Cache-Control: no-store\r\nConnection: close\r\n%s\r\n"
+                    "Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n"
+                    "X-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n%s\r\n"
                     % (status, REASONS.get(status, "OK"), ctype, len(body),
                        "".join("%s: %s\r\n" % kv for kv in extra.items())))
             conn.sendall(head.encode("iso-8859-1") + body)

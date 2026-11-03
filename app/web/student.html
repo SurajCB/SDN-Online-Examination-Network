@@ -128,8 +128,6 @@ footer b{color:var(--ink);font-weight:600}
 </main>
 
 <footer>
-<span>Seat <b id="fSeat">-</b></span>
-<span>Exam server <b id="fServer">-</b></span>
 <span>Server response <b id="fRtt">-</b></span>
 </footer>
 
@@ -162,8 +160,6 @@ function setErr(el, msg) {
 
 function render(s) {
   state = s;
-  $("fSeat").textContent = s.seat;
-  $("fServer").textContent = s.server;
   $("fRtt").textContent = s.last_rtt_ms != null ? s.last_rtt_ms.toFixed(1) + " ms (avg " + s.avg_rtt_ms.toFixed(1) + " ms)" : "-";
   $("who").innerHTML = s.student ? "<b>" + esc(s.student.name || "") + "</b><br>" + esc(s.student.id) : "";
   if (s.stage === "login") {
@@ -255,8 +251,7 @@ $("skipBtn").onclick = () => act("/api/answer", { choice: null });
 $("submitBtn").onclick = () => $("confirm").classList.add("on");
 $("cancelSubmit").onclick = () => $("confirm").classList.remove("on");
 $("confirmSubmit").onclick = () => { $("confirm").classList.remove("on"); act("/api/submit", {}); };
-$("doneBtn").onclick = () => { $("sid").value = window.SEAT_ID || ""; $("pin").value = ""; act("/api/logout", {}); };
-if (window.SEAT_ID) $("sid").value = window.SEAT_ID;
+$("doneBtn").onclick = () => { $("sid").value = ""; $("pin").value = ""; act("/api/logout", {}); };
 document.addEventListener("keydown", (e) => {
   if (!state || state.stage !== "exam" || e.target.tagName === "INPUT") return;
   const n = parseInt(e.key, 10);

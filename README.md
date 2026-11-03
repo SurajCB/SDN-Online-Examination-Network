@@ -24,6 +24,7 @@ Built as a computer networks mini project (*SDN + Socket Programming, Problem #1
 - [Highlights](#highlights)
 - [Architecture](#architecture)
 - [How the application and the network interact](#how-the-application-and-the-network-interact)
+- [Security: keeping host details away from intruders](#security-keeping-host-details-away-from-intruders)
 - [Getting started](#getting-started)
 - [Running the demo](#running-the-demo)
 - [Testing](#testing)
@@ -54,6 +55,8 @@ Built as a computer networks mini project (*SDN + Socket Programming, Problem #1
 | Resume | A dropped student logs back in and continues with the same deadline |
 | Seat whitelist (SDN) | Unregistered hosts are dropped at their first packet |
 | Brute-force block (SDN) | 3 wrong passwords block that seat's IP on every switch |
+| Host-discovery protection (SDN) | Unregistered hosts that ping, ARP-scan or connect to exam machines are cut off; proxy ARP and seat isolation hide hosts from each other |
+| Hidden host details (app) | Public pages show only seat numbers: no IP addresses, host names, server address or student names |
 | QoS (SDN) | Exam flows use a queue with at least 8 Mbps guaranteed on the bottleneck links |
 | Traffic monitoring (SDN) | Exam and background bytes counted every 5 s; congestion events |
 | Student portal | Web page on each seat: login, countdown, one question at a time, result |
@@ -102,6 +105,31 @@ flowchart LR
 
 Every student portal runs **on its seat host inside Mininet**, so each exam connection really comes from that seat's IP address and crosses the SDN switches. That is what makes the whitelist, the blocking and the priority queues meaningful.
 
+### Controller decision flowchart
+
+```mermaid
+flowchart TD
+  A[Packet arrives at an OVS switch] --> B{Flow rule matches?}
+  B -- yes --> B1[Switch forwards or drops it itself]
+  B -- no --> C[Packet-in to Ryu controller]
+  S[Exam server signals<br/>exam_start, auth_fail, submit] -. UDP to 10.0.0.254 .-> C
+  C --> D{Exam running?}
+  D -- no --> D1[Normal learning switch]
+  D -- yes --> E{Registered seat, server<br/>or console host?}
+  E -- no --> E1[Block source on every switch<br/>IP and ARP dropped]
+  E -- yes --> F{Seat to another seat?}
+  F -- yes --> F1[Drop: seat isolation]
+  F -- no --> G{Exam traffic TCP :5000?}
+  G -- yes --> G1[Exam rule, priority 100<br/>queue q1, at least 8 Mbps]
+  G -- no --> G2[Normal rule, priority 10<br/>queue q0, best effort]
+```
+
+The controller sees only the first packet of each new connection. It decides once and installs a rule, and the switch handles the rest of the connection on its own.
+
+<p align="center">
+  <img src="docs/images/controller-flowchart.png" alt="Controller decision flowchart as shown on the Server Console" width="640">
+</p>
+
 ```
                     srv 10.0.0.1 (exam server)      bg 10.0.0.99 (background traffic)
                               \                    /
@@ -129,11 +157,39 @@ The exam server sends small JSON datagrams to the virtual address `10.0.0.254:66
 | Priority | Cookie | Match | Action |
 |---|---|---|---|
 | 400 | `0xE4` | UDP to 10.0.0.254:6666, ARP for 10.0.0.254 | to controller |
-| 300 | `0xE3` | blocked source → exam server | drop |
+| 310 | `0xE3` | blocked source → console host (IP, ARP) | to controller |
+| 300 | `0xE3` | blocked source (all IP and ARP) | drop |
+| 300 | `0xE3` | seat → another seat | drop |
 | 100 | `0xE1` | exact TCP 5-tuple on port 5000 | `set_queue:1`, output |
 | 10 | `0xE2` | other IPv4 5-tuple | `set_queue:0`, output |
 | 5 | `0xE5` | L2 (ARP and others) | output |
 | 0 | — | table-miss | to controller |
+
+## Security: keeping host details away from intruders
+
+An intruder, meaning any host or person that is not part of the exam, should not learn which machines exist, what their addresses are or who is taking the exam. This is enforced at two levels.
+
+**In the network (Ryu controller, while an exam is running)**
+
+| Protection | How it works |
+|---|---|
+| Host-discovery protection | A host that is not a registered seat, the exam server or the console host is blocked the moment it sends an ARP request or any IP packet to an exam machine. Ping sweeps, ARP scans and port scans get no answer. |
+| Full isolation of blocked hosts | A blocked host loses all IP and ARP traffic on every switch (priority 300). The only exception is the console host (priority 310), so its page can still show "cannot reach the exam server". |
+| Proxy ARP | The controller answers ARP requests for known hosts itself instead of broadcasting them, so hosts do not see each other's ARP traffic. |
+| Seat isolation | Registered seats can reach the exam server but not each other. Students cannot discover or connect to other students' machines. |
+| Authenticated signals | App-to-controller signals carry a shared token (`EXAM_SDN_TOKEN`) and, apart from `exam_start`, are accepted only from the exam server's IP. |
+
+**In the application (public web pages)**
+
+| Protection | How it works |
+|---|---|
+| No addresses on public pages | The seat picker, the gateway banner and the exam page show only "Seat 1, 2, 3". No IP addresses, host names or exam-server address appear in the HTML or the JSON APIs. |
+| No student names | Seats no longer say who they are reserved for, and the username is not pre-filled, so an outsider cannot collect usernames to guess passwords. |
+| Generic errors | Connection errors no longer include addresses or system error text. |
+| HTTP hardening | Every response sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. |
+| Examiner-only details | Full host details remain available only on the password-protected Server Console. |
+
+Settings: `EXAM_ISOLATE=0` turns the network protections off, for comparison. `EXAM_MGMT_IPS` sets the console host or hosts (default `10.0.0.200`).
 
 ## Getting started
 
@@ -200,7 +256,7 @@ $ curl localhost:8080/exam/status
 
 ```bash
 python3 tests/test_local.py                                       # 14 tests, no Mininet needed
-~/ryu-venv/bin/python tests/test_controller.py                    # 12 controller tests with a mocked switch
+~/ryu-venv/bin/python tests/test_controller.py                    # 17 controller tests with a mocked switch
 ./scripts/run_demo.sh                                             # end-to-end Mininet run with PASS/FAIL checks
 ```
 
@@ -214,6 +270,8 @@ python3 tests/test_local.py                                       # 14 tests, no
 | T7 | Three wrong passwords | Source IP blocked |
 | T8 | Monitoring | Exam bytes counted by the controller |
 | T9 | Exam ends | Exam mode off, blocks removed |
+| T10 | Unassigned host st4 pings a seat and the server | No replies; st4 blocked on its first probe |
+| T11 | st1 pings st2, then the server | Seat-to-seat blocked; seat-to-server works |
 
 Unit tests run on every push through GitHub Actions (`.github/workflows/tests.yml`).
 
@@ -223,7 +281,7 @@ End-to-end run in Mininet on Ubuntu 26.04 (VirtualBox):
 
 | Metric | Value |
 |---|---|
-| Automated checks | **8 / 8 passed** |
+| Automated checks (T1–T9) | **8 / 8 passed** |
 | Average application RTT | **7.94 ms** |
 | Maximum RTT | 12.77 ms |
 | Jain's fairness index | **0.990** |
@@ -250,6 +308,7 @@ Performance experiments that compare SDN prioritisation with a baseline, with an
 | Exam server | `--duration`, `--max-clients`, `--shuffle`, `--strict-seat`, `--no-sdn` | 120 s (600 s in portal mode), 50 clients |
 | Controller (env) | `EXAM_PRIORITIZE` (0 = baseline), `EXAM_CONGESTION_MBPS`, `EXAM_BLOCK_THRESHOLD`, `EXAM_MONITOR_INTERVAL` | 1, 5, 3, 5 s |
 | Signalling (env) | `EXAM_SDN_TOKEN`: shared secret between server and controller | demo value; change it for real use |
+| Security (env) | `EXAM_ISOLATE` (0 = off), `EXAM_MGMT_IPS` (console host) | 1, 10.0.0.200 |
 | Server Console (env) | `EXAM_CONSOLE_PASSWORD` | random, printed at start |
 | Topology | `--demo`, `--portal`, `--cli`, `--congestion`, `--bg-rate`, `--core-bw`, `--no-qos`, `--tag` | 10 Mbps core links |
 

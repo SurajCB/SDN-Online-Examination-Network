@@ -39,7 +39,7 @@ h1{font-size:22px;margin:0 0 4px}
 <header><div class="top"><div class="logo">E</div><div class="brand">Online Examination Portal<small id="title">Live class demo</small></div></div></header>
 <main>
 <h1>Choose your exam seat</h1>
-<p class="muted">Pick the seat with your name. Each seat is a computer inside the SDN-controlled exam network, and your exam traffic travels through the virtual switches from that seat.</p>
+<p class="muted">Pick the seat number your examiner gave you. Each seat is a computer inside the SDN-controlled exam network, and your exam traffic travels through the virtual switches from that seat.</p>
 <div id="full" class="alert" hidden>All seats are taken right now. Wait for one to become free.</div>
 
 <div class="grid" id="seats"></div>
@@ -53,14 +53,14 @@ async function load() {
   try {
     const d = await (await fetch("/seats/api")).json();
     document.getElementById("title").textContent = d.title;
-    document.getElementById("seats").innerHTML = d.seats.map((s, i) => {
-      const guest = !s.student;
-      const name = guest ? "Guest seat" : "Seat " + (i + 1);
-      const login = guest ? "Not registered for the exam - the SDN will block it" : "Reserved for <b>" + esc(s.student.name) + "</b> · log in with your own password";
+    document.getElementById("seats").innerHTML = d.seats.map((s) => {
+      const guest = !s.registered;
+      const name = esc(s.label);
+      const login = guest ? "Not registered for the exam - the SDN will block it" : "Assigned seat · log in with the username and password from your examiner";
       const usable = s.state === "free";
       return "<div class='seat" + (guest ? " guest" : "") + "'><div class='row'><b>" + name + "</b><span class='st " + s.state + "'>" + LABEL[s.state] + "</span></div>" +
-        "<span class='mono'>" + esc(s.name) + " · " + esc(s.ip) + "</span><span class='login'>" + login + "</span>" +
-        "<a class='take" + (usable ? "" : " off") + "' href='/seats/pick?seat=" + encodeURIComponent(s.name) + "'>" + (usable ? "Take this seat" : "Not available") + "</a></div>";
+        "<span class='login'>" + login + "</span>" +
+        "<a class='take" + (usable ? "" : " off") + "' href='/seats/pick?seat=" + encodeURIComponent(s.id) + "'>" + (usable ? "Take this seat" : "Not available") + "</a></div>";
     }).join("");
   } catch (e) {}
 }

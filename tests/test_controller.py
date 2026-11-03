@@ -15,6 +15,8 @@ import exam_controller as C
 SERVER_MAC = "00:00:00:00:00:01"
 ST1_MAC = "00:00:00:00:00:11"
 INTR_MAC = "00:00:00:00:00:66"
+ST2_MAC = "00:00:00:00:00:12"
+MGMT_MAC = "00:00:00:00:00:c8"
 
 
 class FakeWSGI:
@@ -67,6 +69,12 @@ def tcp_packet(src_mac, dst_mac, src_ip, dst_ip, sport, dport):
                  tcp.tcp(src_port=sport, dst_port=dport, bits=tcp.TCP_SYN))
 
 
+def arp_request(src_mac, src_ip, dst_ip):
+    return build(ethernet.ethernet(dst="ff:ff:ff:ff:ff:ff", src=src_mac, ethertype=ether_types.ETH_TYPE_ARP),
+                 arp.arp(opcode=arp.ARP_REQUEST, src_mac=src_mac, src_ip=src_ip,
+                         dst_mac="00:00:00:00:00:00", dst_ip=dst_ip))
+
+
 def signal_packet(payload, src_ip="10.0.0.1"):
     return build(ethernet.ethernet(dst=C.SIGNAL_MAC, src=SERVER_MAC, ethertype=ether_types.ETH_TYPE_IP),
                  ipv4.ipv4(src=src_ip, dst=C.SIGNAL_IP, proto=in_proto.IPPROTO_UDP),
@@ -79,7 +87,7 @@ class ControllerTests(unittest.TestCase):
         self.app = C.ExamController(wsgi=FakeWSGI())
         self.dp = FakeDP(1)
         self.app.datapaths[1] = self.dp
-        self.app.mac_to_port[1] = {SERVER_MAC: 1, ST1_MAC: 3, INTR_MAC: 4}
+        self.app.mac_to_port[1] = {SERVER_MAC: 1, ST1_MAC: 3, INTR_MAC: 4, ST2_MAC: 5, MGMT_MAC: 6}
 
     def packet_in(self, data, in_port):
         self.app.packet_in_handler(Ev(Msg(self.dp, in_port, data)))
@@ -137,10 +145,53 @@ class ControllerTests(unittest.TestCase):
         self.packet_in(tcp_packet(INTR_MAC, SERVER_MAC, "10.0.0.66", "10.0.0.1", 40002, 5000), 4)
         self.assertIn("10.0.0.66", self.app.blocked)
         blocks = self.dp.flow_mods(C.COOKIE_BLOCK)
-        self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0].priority, C.PRIO_BLOCK)
-        self.assertEqual(blocks[0].instructions, [])
+        drops = [f for f in blocks if f.priority == C.PRIO_BLOCK]
+        allows = [f for f in blocks if f.priority == C.PRIO_BLOCK_ALLOW]
+        self.assertEqual(len(drops), 2)
+        self.assertTrue(all(f.instructions == [] for f in drops))
+        self.assertEqual({dict(f.match.items()).get("ipv4_dst") or dict(f.match.items()).get("arp_tpa") for f in allows},
+                         set(C.MGMT_IPS))
         self.assertEqual(self.dp.packet_outs(), [])
+
+    def test_intruder_arp_scan_gets_nothing(self):
+        self.start_exam()
+        self.packet_in(arp_request(INTR_MAC, "10.0.0.66", "10.0.0.11"), 4)
+        self.assertEqual(self.dp.packet_outs(), [])
+        self.assertIn("10.0.0.66", self.app.blocked)
+        self.assertIn("probed exam host", self.app.blocked["10.0.0.66"]["reason"])
+
+    def test_intruder_probe_of_seat_blocked(self):
+        self.start_exam()
+        self.packet_in(tcp_packet(INTR_MAC, ST1_MAC, "10.0.0.66", "10.0.0.11", 40003, 22), 4)
+        self.assertEqual(self.dp.packet_outs(), [])
+        self.assertIn("10.0.0.66", self.app.blocked)
+
+    def test_management_host_still_reaches_seats(self):
+        self.start_exam()
+        self.packet_in(tcp_packet(INTR_MAC, MGMT_MAC, "10.0.0.66", "10.0.0.200", 8000, 50000), 4)
+        self.assertEqual(len(self.dp.packet_outs()), 1)
+        self.assertNotIn("10.0.0.66", self.app.blocked)
+
+    def test_seats_cannot_reach_each_other(self):
+        self.packet_in(signal_packet({"event": "exam_start", "token": C.TOKEN, "server_ip": "10.0.0.1",
+                                      "port": 5000, "allowed_ips": ["10.0.0.11", "10.0.0.12"]}), 1)
+        self.packet_in(tcp_packet(ST1_MAC, ST2_MAC, "10.0.0.11", "10.0.0.12", 40004, 8000), 3)
+        self.assertEqual(self.dp.packet_outs(), [])
+        self.assertNotIn("10.0.0.11", self.app.blocked)
+        self.assertTrue(any(e["event"] == "seat_isolation" for e in self.app.event_log))
+        self.assertEqual(len(self.dp.flow_mods(C.COOKIE_BLOCK)), 1)
+
+    def test_proxy_arp_answers_without_broadcast(self):
+        self.start_exam()
+        self.packet_in(tcp_packet(ST1_MAC, SERVER_MAC, "10.0.0.11", "10.0.0.1", 40001, 5000), 3)
+        before = len(self.dp.packet_outs())
+        self.packet_in(arp_request(SERVER_MAC, "10.0.0.1", "10.0.0.11"), 1)
+        outs = self.dp.packet_outs()[before:]
+        self.assertEqual(len(outs), 1)
+        reply = packet.Packet(outs[0].data).get_protocol(arp.arp)
+        self.assertEqual(reply.opcode, arp.ARP_REPLY)
+        self.assertEqual(reply.src_mac, ST1_MAC)
+        self.assertEqual(outs[0].actions[0].port, 1)
 
     def test_auth_fail_threshold_blocks(self):
         self.start_exam()

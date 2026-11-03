@@ -43,6 +43,27 @@ flowchart LR
   R -- "REST :8080 /exam/status /exam/stats /exam/events" --> OP[Operator / demo script]
 ```
 
+### Controller decision flowchart
+
+```mermaid
+flowchart TD
+  A[Packet arrives at an OVS switch] --> B{Flow rule matches?}
+  B -- yes --> B1[Switch forwards or drops it itself]
+  B -- no --> C[Packet-in to Ryu controller]
+  S[Exam server signals<br/>exam_start, auth_fail, submit] -. UDP to 10.0.0.254 .-> C
+  C --> D{Exam running?}
+  D -- no --> D1[Normal learning switch]
+  D -- yes --> E{Registered seat, server<br/>or console host?}
+  E -- no --> E1[Block source on every switch<br/>IP and ARP dropped]
+  E -- yes --> F{Seat to another seat?}
+  F -- yes --> F1[Drop: seat isolation]
+  F -- no --> G{Exam traffic TCP :5000?}
+  G -- yes --> G1[Exam rule, priority 100<br/>queue q1, at least 8 Mbps]
+  G -- no --> G2[Normal rule, priority 10<br/>queue q0, best effort]
+```
+
+The controller sees only the first packet of each new connection. It decides once and installs a rule, and the switch handles the rest of the connection on its own.
+
 ### Topology
 
 ```
@@ -123,7 +144,9 @@ The exam server tells the network what is happening through **in-band UDP signal
 | App event | Controller reaction |
 |---|---|
 | `exam_start` (server IP, port, allowed seat IPs; repeated as a heartbeat) | Enter exam mode, store whitelist, flush old flows so new ones get QoS queues |
-| TCP SYN to server:5000 from a non-whitelisted IP | Install priority-300 drop rule on all switches, log `blocked` |
+| TCP SYN to server:5000 from a non-whitelisted IP | Block that IP on all switches, log `blocked` |
+| ARP or IP from an unregistered host to the server or a seat | Block that IP on all switches (host-discovery protection) |
+| Packet from one seat to another seat | Drop that pair, log `seat_isolation` |
 | `auth_fail` with count ≥ 3 | Block that source IP (brute-force protection) |
 | `student_login` / `student_submit` | Track active students and results for monitoring |
 | `exam_end` | Leave exam mode, remove blocks and queue assignments |
@@ -134,7 +157,9 @@ The exam server tells the network what is happening through **in-band UDP signal
 |---|---|---|---|---|
 | 400 | 0xE4 | UDP dst 10.0.0.254:6666, ARP tpa 10.0.0.254 | → controller | none |
 | 400 | 0xE4 | IPv6 | drop | none |
-| 300 | 0xE3 | ipv4_src = blocked IP, ipv4_dst = server | drop | until unblocked |
+| 310 | 0xE3 | blocked IP → console host (IP and ARP) | → controller | until unblocked |
+| 300 | 0xE3 | ipv4_src = blocked IP; arp_spa = blocked IP | drop | until unblocked |
+| 300 | 0xE3 | seat IP → other seat IP | drop | idle 60 s |
 | 100 | 0xE1 | exact TCP 5-tuple with port 5000 | set_queue 1 (in exam mode), output | idle 60 s |
 | 10 | 0xE2 | exact IPv4 5-tuple (other traffic) | set_queue 0 (in exam mode), output | idle 30 s |
 | 5 | 0xE5 | in_port, eth_src, eth_dst, eth_type (ARP etc.) | output | idle 30 s |
@@ -142,9 +167,36 @@ The exam server tells the network what is happening through **in-band UDP signal
 
 Cookies let the monitor sum bytes per traffic class from flow statistics; bytes from expired flows are added back from `FlowRemoved` messages so counters never go backwards.
 
-## 7. Expected network behaviour
+## 7. Security: keeping host details away from intruders
+
+An intruder, meaning any host or person that is not part of the exam, should not learn which machines exist, what their addresses are or who is taking the exam. This is enforced at two levels.
+
+**In the network (Ryu controller, while an exam is running)**
+
+| Protection | How it works |
+|---|---|
+| Host-discovery protection | A host that is not a registered seat, the exam server or the console host is blocked the moment it sends an ARP request or any IP packet to an exam machine. Ping sweeps, ARP scans and port scans get no answer. |
+| Full isolation of blocked hosts | A blocked host loses all IP and ARP traffic on every switch (priority 300). The only exception is the console host (priority 310), so its page can still show "cannot reach the exam server". |
+| Proxy ARP | The controller answers ARP requests for known hosts itself instead of broadcasting them, so hosts do not see each other's ARP traffic. |
+| Seat isolation | Registered seats can reach the exam server but not each other. Students cannot discover or connect to other students' machines. |
+| Authenticated signals | App-to-controller signals carry a shared token (`EXAM_SDN_TOKEN`) and, apart from `exam_start`, are accepted only from the exam server's IP. |
+
+**In the application (public web pages)**
+
+| Protection | How it works |
+|---|---|
+| No addresses on public pages | The seat picker, the gateway banner and the exam page show only "Seat 1, 2, 3". No IP addresses, host names or exam-server address appear in the HTML or the JSON APIs. |
+| No student names | Seats no longer say who they are reserved for, and the username is not pre-filled, so an outsider cannot collect usernames to guess passwords. |
+| Generic errors | Connection errors no longer include addresses or system error text. |
+| HTTP hardening | Every response sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. |
+| Examiner-only details | Full host details remain available only on the password-protected Server Console. |
+
+Settings: `EXAM_ISOLATE=0` turns the network protections off, for comparison. `EXAM_MGMT_IPS` sets the console host or hosts (default `10.0.0.200`).
+
+## 8. Expected network behaviour
 
 * Before the exam: plain learning-switch connectivity (pingall 0 % loss).
 * Exam running: only the seats in `students.json` (st1–st3: Harsha, Uday, Suraj) reach srv:5000; st4–st6 and intr are dropped at their first SYN; exam flows show up under cookie 0xE1 with queue 1.
-* Brute-force login from any host gets that host cut off from the server after the 3rd failure.
+* Brute-force login from any host gets that host cut off from the network after the 3rd failure.
+* An unregistered host that pings, ARP-scans or connects to any exam machine is blocked on its first packet; seats cannot reach each other.
 * Under background flooding of a core link (D2), exam flows keep their 8 Mbps guaranteed queue, so RTT stays low; in baseline mode (`EXAM_PRIORITIZE=0`) RTT rises and fairness drops. The controller logs a `congestion` event when non-exam traffic exceeds the threshold.

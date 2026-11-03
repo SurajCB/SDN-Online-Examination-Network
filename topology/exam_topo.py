@@ -153,6 +153,22 @@ class Demo:
         self.check("T4 unauthorized host blocked by SDN", "10.0.0.66" in status.get("blocked", {}),
                    str(status.get("blocked", {}).get("10.0.0.66", "")))
 
+        info("\n*** T10: unassigned host st4 tries to discover exam hosts (ping seat + server)\n")
+        st4 = net.get("st4")
+        out = st4.cmd("ping -c 2 -W 1 10.0.0.11; ping -c 2 -W 1 10.0.0.1")
+        status = rest("/exam/status")
+        hidden = " 0% packet loss" not in out and "bytes from" not in out
+        self.check("T10 host discovery hidden from unregistered host",
+                   hidden and "10.0.0.14" in status.get("blocked", {}),
+                   str(status.get("blocked", {}).get("10.0.0.14", "")))
+
+        info("\n*** T11: seat isolation (st1 -> st2 blocked, st1 -> server allowed)\n")
+        st1 = net.get("st1")
+        peer = st1.cmd("ping -c 2 -W 1 10.0.0.12")
+        srv_ok = st1.cmd("ping -c 2 -W 1 10.0.0.1")
+        self.check("T11 seats isolated from each other", "bytes from" not in peer and "bytes from" in srv_ok,
+                   "seat->seat blocked, seat->server ok")
+
         for sid, proc in procs.items():
             proc.wait()
 

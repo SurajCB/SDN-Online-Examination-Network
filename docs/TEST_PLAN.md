@@ -5,7 +5,7 @@
 ```bash
 python3 tests/test_local.py                      # protocol, server, portal and console tests (14 tests)
 source ~/ryu-venv/bin/activate
-python tests/test_controller.py                  # controller logic with a mocked switch (12 tests)
+python tests/test_controller.py                  # controller logic with a mocked switch (17 tests)
 ```
 
 | ID | Test | Expected |
@@ -17,7 +17,7 @@ python tests/test_controller.py                  # controller logic with a mocke
 | L8 | 3 wrong PINs | 3 × `LOGIN_FAIL`, `auth_fail` count reaches 3 |
 | L9 | Disconnect after 1 answer, log back in | `LOGIN_OK resumed=true answered=1` |
 | L10 | Idle student | `TIME_UP` then `RESULT status=timeout` |
-| C1–C10 | Controller: ARP proxy for 10.0.0.254, exam_start, bad token, spoofed signal, exam flow on queue 1, other flow on queue 0, unauthorised host blocked, auth-fail threshold, exam_end unblocks, no queue outside exam mode | All pass |
+| C1–C17 | Controller: ARP for 10.0.0.254, exam_start, bad token, spoofed signal, exam flow on queue 1, other flow on queue 0, unauthorised host blocked (IP + ARP), ARP scan gets nothing, probe of a seat blocked, console host still reachable, seat isolation, proxy ARP, auth-fail threshold, exam_end unblocks, new run resets state, no queue outside exam mode, flow-table snapshot | All pass |
 
 ## Level 2 — Mininet end-to-end (D1 demo)
 
@@ -34,6 +34,8 @@ Terminal 1: `./scripts/run_controller.sh`  ·  Terminal 2: `./scripts/run_demo.s
 | T7 | Brute force | 3 wrong passwords from st3 | `10.0.0.13` in `blocked` |
 | T8 | Monitoring | `/exam/stats` | exam_bytes > 0 |
 | T9 | Exam end | SIGINT to server | `exam_active: false`, blocks removed |
+| T10 | Host discovery | st4 (unassigned) pings a seat and the server | No replies; `10.0.0.14` blocked with reason "probed exam host" |
+| T11 | Seat isolation | st1 pings st2, then the server | st1 → st2 gets no reply; st1 → server works |
 
 The demo prints PASS/FAIL for each and a summary. Logs: `logs/<tag>_*.log`, results: `results/`.
 
@@ -53,6 +55,7 @@ Terminal 1: `./scripts/run_controller.sh`  ·  Terminal 2: `./scripts/run_portal
 | W7 | `./scripts/run_public.sh`, open the student link on a phone using mobile data | Seat picker loads; picking a seat and logging in works; the console shows the student |
 | W8 | Open the console link on another device | Password page; wrong password refused; correct password opens all 5 tabs |
 | W9 | Console → Testing tab | Live checks all PASS while the exam is running |
+| W10 | View source of the seat picker and exam page, and open `/seats/api` | No IP addresses, host names, server address or student names |
 
 ## Manual checks for the viva
 

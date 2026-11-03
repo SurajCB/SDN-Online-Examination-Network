@@ -97,7 +97,7 @@ class ExamBridge:
                 self.close()
                 if self.stage != "result":
                     self.stage = "login"
-                    self.error = "Connection to the exam server was lost (%s). Log in again to resume." % exc
+                    self.error = "Connection to the exam server was lost. Log in again to resume."
             return self.state()
 
     def login(self, sid, pin):
@@ -114,8 +114,8 @@ class ExamBridge:
                 self.connect_ms = (time.time() - t0) * 1000
             except OSError as exc:
                 self.sock = None
-                self.error = ("Cannot reach the exam server at %s:%d (%s). If this seat is not assigned to the "
-                              "exam, the network blocks it." % (self.server, self.port, exc))
+                self.error = ("Cannot reach the exam server. If this seat is not assigned to the exam, "
+                              "the network blocks it.")
                 return
             P.tune_socket(self.sock)
             self.sock.settimeout(self.timeout)
@@ -166,8 +166,6 @@ class ExamBridge:
         rtts = self.rtts
         return {
             "stage": self.stage,
-            "seat": self.seat,
-            "server": "%s:%d" % (self.server, self.port),
             "student": self.student,
             "title": self.info.get("exam_title"),
             "total": self.info.get("total_questions"),

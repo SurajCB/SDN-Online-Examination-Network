@@ -270,19 +270,32 @@ class PortalTests(unittest.TestCase):
         conn.request("GET", "/seats/api")
         seats = json.loads(conn.getresponse().read().decode())["seats"]
         self.assertEqual(len(seats), 7)
-        self.assertEqual(next(x for x in seats if x["name"] == "st2")["state"], "free")
+        raw = json.dumps(seats)
+        for leak in ("10.0.0.", "st2", "S102", "Student"):
+            self.assertNotIn(leak, raw)
+        self.assertEqual(next(x for x in seats if x["id"] == "2")["state"], "free")
+        self.assertEqual(seats[-1]["id"], "guest")
+        self.assertFalse(seats[-1]["registered"])
         conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
-        conn.request("GET", "/seats/pick?seat=st2")
+        conn.request("GET", "/seats/pick?seat=2")
         r = conn.getresponse()
         r.read()
         cookie = r.getheader("Set-Cookie").split(";")[0]
-        self.assertEqual(cookie, "seat=st2")
+        self.assertEqual(cookie, "seat=2")
         conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
         conn.request("GET", "/", headers={"Cookie": cookie})
-        page = conn.getresponse().read().decode()
+        resp = conn.getresponse()
+        page = resp.read().decode()
         self.assertIn("Online Examination Portal", page)
-        self.assertIn('window.SEAT_ID="S102"', page)
-        self.assertNotIn("1112", page)
+        self.assertIn("Seat 2", page)
+        self.assertEqual(resp.getheader("X-Frame-Options"), "DENY")
+        for leak in ("1112", "S102", "10.0.0.", "127.0.0.1", "SEAT_ID"):
+            self.assertNotIn(leak, page)
+        conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
+        conn.request("GET", "/api/state", headers={"Cookie": cookie})
+        state = json.loads(conn.getresponse().read().decode())
+        self.assertNotIn("seat", state)
+        self.assertNotIn("server", state)
 
     def test_console_requires_password(self):
         import http.client

@@ -23,9 +23,12 @@ MONITOR_INTERVAL = float(os.environ.get("EXAM_MONITOR_INTERVAL", 5))
 BLOCK_THRESHOLD = int(os.environ.get("EXAM_BLOCK_THRESHOLD", 3))
 CONGESTION_MBPS = float(os.environ.get("EXAM_CONGESTION_MBPS", 5))
 PRIORITIZE = os.environ.get("EXAM_PRIORITIZE", "1") == "1"
+ISOLATE = os.environ.get("EXAM_ISOLATE", "1") == "1"
+MGMT_IPS = {ip.strip() for ip in os.environ.get("EXAM_MGMT_IPS", "10.0.0.200").split(",") if ip.strip()}
 LOG_DIR = os.environ.get("EXAM_LOG_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 
 PRIO_SIGNAL = 400
+PRIO_BLOCK_ALLOW = 310
 PRIO_BLOCK = 300
 PRIO_EXAM = 100
 PRIO_OTHER = 10
@@ -52,6 +55,7 @@ class ExamController(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.ip_to_mac = {}
         self.datapaths = {}
         self.exam_active = False
         self.server_ip = None
@@ -60,6 +64,7 @@ class ExamController(app_manager.RyuApp):
         self.blocked = {}
         self.active_students = {}
         self.submitted = {}
+        self.isolated_pairs = set()
         self.run_id = None
         self.event_log = deque(maxlen=300)
         self.stats = {}
@@ -150,6 +155,22 @@ class ExamController(app_manager.RyuApp):
         tcp_pkt = pkt.get_protocol(tcp.tcp)
         udp_pkt = pkt.get_protocol(udp.udp)
 
+        if arp_pkt and arp_pkt.src_ip != "0.0.0.0":
+            self.ip_to_mac[arp_pkt.src_ip] = arp_pkt.src_mac
+        elif ip_pkt:
+            self.ip_to_mac.setdefault(ip_pkt.src, eth.src)
+
+        if arp_pkt:
+            verdict = self.isolation_verdict(arp_pkt.src_ip, arp_pkt.dst_ip)
+            if verdict != "allow":
+                self.deny(arp_pkt.src_ip, arp_pkt.dst_ip, verdict, "ARP")
+                return
+            if arp_pkt.opcode == arp.ARP_REQUEST and self.exam_active and ISOLATE:
+                mac = self.ip_to_mac.get(arp_pkt.dst_ip)
+                if mac:
+                    self.proxy_arp(dp, in_port, eth, arp_pkt, mac)
+                    return
+
         if ip_pkt and udp_pkt and ip_pkt.dst == SIGNAL_IP and udp_pkt.dst_port == SIGNAL_PORT:
             payload = pkt.protocols[-1]
             if isinstance(payload, (bytes, bytearray)):
@@ -160,6 +181,12 @@ class ExamController(app_manager.RyuApp):
             if ip_pkt.src in self.blocked or (self.allowed and ip_pkt.src not in self.allowed):
                 if ip_pkt.src not in self.blocked:
                     self.block_ip(ip_pkt.src, "not on exam whitelist")
+                return
+
+        if ip_pkt:
+            verdict = self.isolation_verdict(ip_pkt.src, ip_pkt.dst)
+            if verdict != "allow":
+                self.deny(ip_pkt.src, ip_pkt.dst, verdict, "IP", dp)
                 return
 
         dst_port = self.mac_to_port[dp.id].get(eth.dst, ofp.OFPP_FLOOD)
@@ -188,6 +215,46 @@ class ExamController(app_manager.RyuApp):
         data = msg.data if msg.buffer_id == ofp.OFP_NO_BUFFER else None
         dp.send_msg(parser.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id, in_port=in_port,
                                         actions=actions, data=data))
+
+    def protected_ips(self):
+        return ({self.server_ip} if self.server_ip else set()) | self.allowed
+
+    def isolation_verdict(self, src, dst):
+        if not (self.exam_active and ISOLATE) or not src or not dst or src == dst:
+            return "allow"
+        if src in MGMT_IPS or dst in MGMT_IPS or dst == SIGNAL_IP:
+            return "allow"
+        protected = self.protected_ips()
+        if dst in protected and src not in protected:
+            return "discovery"
+        if src in self.allowed and dst in self.allowed:
+            return "seat_isolation"
+        return "allow"
+
+    def deny(self, src, dst, verdict, kind, dp=None):
+        if verdict == "discovery":
+            if src not in self.blocked:
+                self.block_ip(src, "probed exam host %s (%s)" % (dst, kind))
+            return
+        key = (src, dst)
+        if key not in self.isolated_pairs:
+            self.isolated_pairs.add(key)
+            self.event("seat_isolation", src=src, dst=dst, via=kind)
+        if dp is not None and kind == "IP":
+            parser = dp.ofproto_parser
+            self.add_flow(dp, PRIO_BLOCK, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=src,
+                                                          ipv4_dst=dst), [], COOKIE_BLOCK, idle=60)
+
+    def proxy_arp(self, dp, in_port, eth, arp_pkt, mac):
+        parser = dp.ofproto_parser
+        ofp = dp.ofproto
+        reply = packet.Packet()
+        reply.add_protocol(ethernet.ethernet(dst=eth.src, src=mac, ethertype=ether_types.ETH_TYPE_ARP))
+        reply.add_protocol(arp.arp(opcode=arp.ARP_REPLY, src_mac=mac, src_ip=arp_pkt.dst_ip,
+                                   dst_mac=arp_pkt.src_mac, dst_ip=arp_pkt.src_ip))
+        reply.serialize()
+        dp.send_msg(parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER,
+                                        actions=[parser.OFPActionOutput(in_port)], data=reply.data))
 
     def is_exam_request(self, ip_pkt, tcp_pkt):
         return (self.exam_active and tcp_pkt.dst_port == self.exam_port
@@ -246,6 +313,7 @@ class ExamController(app_manager.RyuApp):
             self.run_id = run
             self.submitted = {}
             self.active_students = {}
+            self.isolated_pairs = set()
             for ip in list(self.blocked):
                 self.unblock_ip(ip)
         changed = (new_run or not self.exam_active or self.server_ip != server_ip or self.exam_port != port
@@ -258,6 +326,7 @@ class ExamController(app_manager.RyuApp):
             for dp in self.datapaths.values():
                 self.delete_flows(dp, COOKIE_EXAM)
                 self.delete_flows(dp, COOKIE_OTHER)
+                self.delete_flows(dp, COOKIE_L2)
             self.event("exam_start", server=server_ip, port=port, allowed=sorted(self.allowed))
 
     def end_exam(self):
@@ -274,10 +343,15 @@ class ExamController(app_manager.RyuApp):
 
     def install_block(self, dp, ip):
         parser = dp.ofproto_parser
-        fields = dict(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip)
-        if self.server_ip:
-            fields["ipv4_dst"] = self.server_ip
-        self.add_flow(dp, PRIO_BLOCK, parser.OFPMatch(**fields), [], COOKIE_BLOCK)
+        ofp = dp.ofproto
+        self.add_flow(dp, PRIO_BLOCK, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip), [], COOKIE_BLOCK)
+        self.add_flow(dp, PRIO_BLOCK, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_spa=ip), [], COOKIE_BLOCK)
+        to_ctrl = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)]
+        for mgmt in MGMT_IPS:
+            self.add_flow(dp, PRIO_BLOCK_ALLOW, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip,
+                                                                ipv4_dst=mgmt), to_ctrl, COOKIE_BLOCK)
+            self.add_flow(dp, PRIO_BLOCK_ALLOW, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_spa=ip,
+                                                                arp_tpa=mgmt), to_ctrl, COOKIE_BLOCK)
 
     def block_ip(self, ip, reason):
         self.blocked[ip] = {"reason": reason, "since": time.strftime("%H:%M:%S")}
@@ -291,6 +365,7 @@ class ExamController(app_manager.RyuApp):
         for dp in self.datapaths.values():
             parser = dp.ofproto_parser
             self.delete_flows(dp, COOKIE_BLOCK, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip))
+            self.delete_flows(dp, COOKIE_BLOCK, parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_spa=ip))
         self.event("unblocked", ip=ip)
         return True
 
@@ -380,7 +455,8 @@ class ExamController(app_manager.RyuApp):
 
     def status(self):
         return {"exam_active": self.exam_active, "server_ip": self.server_ip, "exam_port": self.exam_port,
-                "prioritize": PRIORITIZE, "allowed_ips": sorted(self.allowed), "blocked": self.blocked,
+                "prioritize": PRIORITIZE, "isolation": ISOLATE, "management_ips": sorted(MGMT_IPS),
+                "allowed_ips": sorted(self.allowed), "blocked": self.blocked,
                 "active_students": self.active_students, "submitted": self.submitted,
                 "switches": sorted(self.datapaths.keys())}
 
