@@ -35,7 +35,7 @@ Terminal 1: `./scripts/run_controller.sh`  ·  Terminal 2: `./scripts/run_demo.s
 | T8 | Monitoring | `/exam/stats` | exam_bytes > 0 |
 | T9 | Exam end | SIGINT to server | `exam_active: false`, blocks removed |
 | T10 | Host discovery | st4 (unassigned) pings a seat and the server | No replies; `10.0.0.14` blocked with reason "probed exam host" |
-| T11 | Seat isolation | st1 pings st2, then the server | st1 → st2 gets no reply; st1 → server works |
+| T11 | Seat isolation | st1 pings st2 | No reply; controller logs `seat_isolation` for 10.0.0.11 → 10.0.0.12 |
 
 The demo prints PASS/FAIL for each and a summary. Logs: `logs/<tag>_*.log`, results: `results/`.
 

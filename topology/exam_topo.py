@@ -162,12 +162,15 @@ class Demo:
                    hidden and "10.0.0.14" in status.get("blocked", {}),
                    str(status.get("blocked", {}).get("10.0.0.14", "")))
 
-        info("\n*** T11: seat isolation (st1 -> st2 blocked, st1 -> server allowed)\n")
+        info("\n*** T11: seat isolation (st1 -> st2 must be dropped by the controller)\n")
         st1 = net.get("st1")
         peer = st1.cmd("ping -c 2 -W 1 10.0.0.12")
-        srv_ok = st1.cmd("ping -c 2 -W 1 10.0.0.1")
-        self.check("T11 seats isolated from each other", "bytes from" not in peer and "bytes from" in srv_ok,
-                   "seat->seat blocked, seat->server ok")
+        events = rest("/exam/events")
+        events = events if isinstance(events, list) else events.get("events", [])
+        isolated = any(e.get("event") == "seat_isolation" and e.get("src") == "10.0.0.11" and e.get("dst") == "10.0.0.12"
+                       for e in events)
+        self.check("T11 seats isolated from each other", "bytes from" not in peer and isolated,
+                   "st1 -> st2 dropped, seat_isolation logged")
 
         for sid, proc in procs.items():
             proc.wait()

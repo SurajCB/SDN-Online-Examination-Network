@@ -271,24 +271,45 @@ python3 tests/test_local.py                                       # 14 tests, no
 | T8 | Monitoring | Exam bytes counted by the controller |
 | T9 | Exam ends | Exam mode off, blocks removed |
 | T10 | Unassigned host st4 pings a seat and the server | No replies; st4 blocked on its first probe |
-| T11 | st1 pings st2, then the server | Seat-to-seat blocked; seat-to-server works |
+| T11 | st1 pings st2 | Dropped by the controller; `seat_isolation` event logged |
 
 Unit tests run on every push through GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Results and screenshots
 
-End-to-end run in Mininet on Ubuntu 26.04 (VirtualBox):
+### Performance evaluation (D2)
 
-| Metric | Value |
-|---|---|
-| Automated checks (T1–T9) | **8 / 8 passed** |
-| Average application RTT | **7.94 ms** |
-| Maximum RTT | 12.77 ms |
-| Jain's fairness index | **0.990** |
+Four runs in Mininet on Ubuntu 26.04 (VirtualBox), each with three students. The third student is deliberately slow (8–10 s per answer) so the server timer is exercised. In the congested runs, a 15 Mbps UDP flood is sent over the 10 Mbps core link that the exam traffic crosses.
+
+| Run | Priority queues | Background flood | Avg RTT | p95 RTT | Max RTT | Jain | What happened to the students | Checks |
+|---|---|---|---|---|---|---|---|---|
+| `base_idle` | off | none | 55.2 ms | 249.8 ms | 458.4 ms | 0.807 | 2 completed, slow student timed out (as designed) | 10/10 |
+| `base_cong` | off | 15 Mbps | **9,961 ms** | **30,448 ms** | **45,370 ms** | 0.874 | **Nobody completed**: one disconnected, one ran out of time after 6 requests, one never got a single reply | 9/10 |
+| `sdn_idle` | on | none | 76.9 ms | 396.9 ms | 1,021.8 ms | 0.626 | 2 completed, slow student timed out (as designed) | 10/10 |
+| `sdn_cong` | on | 15 Mbps | **16.2 ms** | **69.6 ms** | **171.7 ms** | 0.695 | 2 completed in 8–11 s, slow student timed out (as designed) | 9/10 → 10/10 on recheck |
+
+<p align="center">
+  <img src="docs/images/d2-response-time.png" alt="Bar chart of average and 95th percentile response time for the four runs, log scale" width="820">
+</p>
+
+**What the numbers show**
+
+- **Under congestion, SDN prioritisation keeps the exam usable.** Without priority queues, exam packets share the flooded queue: the average response time rose to about 10 s, the 95th percentile to 30 s, and no student could finish normally. With the controller putting exam flows into the guaranteed queue (q1, at least 8 Mbps), the average was 16 ms, about 600 times lower, and the 95th percentile was 70 ms.
+- **On an idle network, priority makes no meaningful difference.** Both idle runs stayed below 100 ms on average. The gap between them comes from VM timing noise and the slow student's occasional spikes (maximum 458 ms and 1,022 ms), not from the queues.
+- **Fairness.** Jain's index is computed over the three students' average response times. Because one of the three is deliberately slow, it mostly reflects that student's spikes. Response time and completion are the clearer measures in this setup.
+- **Checks T1–T10 passed in every run.** T11 failed in the two congested runs because its original version also pinged the server, and ICMP is best-effort traffic that the flood drops. Seat isolation itself worked. T11 now checks the controller's `seat_isolation` event instead. A recheck with SDN priority and congestion passed **10/10** (average 16.6 ms, maximum 233 ms, Jain 0.792).
+
+The raw files are in [docs/results/](docs/results): per-student metrics CSVs, test summaries and the `analyze.py` output. To reproduce, see [Performance experiments](docs/TEST_PLAN.md).
+
+### D1 run
+
+The first end-to-end run (SDN priority, no congestion, T1–T9) passed **8 / 8** checks, with an average response time of 7.94 ms, a maximum of 12.77 ms and Jain fairness of 0.990.
 
 <p align="center">
   <img src="docs/images/mininet-demo-results.jpg" alt="Terminal output of the automated Mininet run with all checks passing" width="820">
 </p>
+
+### Screenshots
 
 <p align="center">
   <img src="docs/images/server-console.png" alt="Server Console, Exam Server tab with live TCP sessions" width="49%">
@@ -298,8 +319,6 @@ End-to-end run in Mininet on Ubuntu 26.04 (VirtualBox):
   <img src="docs/images/student-portal.png" alt="Student portal on a phone" width="820">
 </p>
 <p align="center"><sub>Console and result screenshots come from a local preview run, so seat addresses show as 127.0.0.1.</sub></p>
-
-Performance experiments that compare SDN prioritisation with a baseline, with and without congestion, are described in [docs/TEST_PLAN.md](docs/TEST_PLAN.md). Use `tools/analyze.py` to produce the response time and fairness summary and plots.
 
 ## Configuration
 

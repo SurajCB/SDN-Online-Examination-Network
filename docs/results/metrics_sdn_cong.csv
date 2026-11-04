@@ -1,0 +1,4 @@
+ts,label,student_id,status,connect_ms,login_rtt_ms,avg_rtt_ms,p95_rtt_ms,max_rtt_ms,requests,total_s,score,total
+2026-11-04 15:28:17,sdn_cong,Harsha,completed,35.409,12.564,7.728,12.564,12.564,11,7.88,0,10
+2026-11-04 15:28:20,sdn_cong,Uday,completed,40.571,10.237,9.515,24.593,24.593,11,10.548,2,10
+2026-11-04 15:29:13,sdn_cong,Suraj,timeout,39.28,13.095,31.348,171.685,171.685,7,64.367,1,10

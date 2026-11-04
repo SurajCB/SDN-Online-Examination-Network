@@ -1,0 +1,91 @@
+{
+  "tag": "sdn_cong",
+  "time": "2026-11-04 15:29:16",
+  "congestion": true,
+  "checks": [
+    {
+      "name": "T1 connectivity",
+      "ok": true,
+      "detail": "loss=0.0%"
+    },
+    {
+      "name": "T2 exam_start signal reached controller",
+      "ok": true,
+      "detail": "allowed=['10.0.0.11', '10.0.0.12', '10.0.0.13']"
+    },
+    {
+      "name": "T4 unauthorized host blocked by SDN",
+      "ok": true,
+      "detail": "{'reason': 'not on exam whitelist', 'since': '15:28:09'}"
+    },
+    {
+      "name": "T10 host discovery hidden from unregistered host",
+      "ok": true,
+      "detail": "{'reason': 'probed exam host 10.0.0.11 (ARP)', 'since': '15:28:07'}"
+    },
+    {
+      "name": "T11 seats isolated from each other",
+      "ok": false,
+      "detail": "seat->seat blocked, seat->server ok"
+    },
+    {
+      "name": "T5 all students received results",
+      "ok": true,
+      "detail": "3/3"
+    },
+    {
+      "name": "T6 exam timer enforced (slow student timed out)",
+      "ok": true,
+      "detail": "timeout"
+    },
+    {
+      "name": "T7 brute-force source blocked",
+      "ok": true,
+      "detail": "{'reason': '3 failed logins', 'since': '15:29:14'}"
+    },
+    {
+      "name": "T8 controller monitored exam traffic",
+      "ok": true,
+      "detail": "exam_bytes=75780"
+    },
+    {
+      "name": "T9 exam_end clears SDN exam policy",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "passed": 9,
+  "total": 10,
+  "performance": {
+    "avg_rtt_ms": 16.2,
+    "max_rtt_ms": 171.69,
+    "jain": 0.695,
+    "clients": 3
+  },
+  "results": [
+    {
+      "student_id": "Harsha",
+      "name": "Harsha",
+      "ip": "10.0.0.11",
+      "score": "0",
+      "total": "10",
+      "status": "completed"
+    },
+    {
+      "student_id": "Uday",
+      "name": "Uday",
+      "ip": "10.0.0.12",
+      "score": "2",
+      "total": "10",
+      "status": "completed"
+    },
+    {
+      "student_id": "Suraj",
+      "name": "Suraj",
+      "ip": "10.0.0.13",
+      "score": "1",
+      "total": "10",
+      "status": "timeout"
+    }
+  ]
+}

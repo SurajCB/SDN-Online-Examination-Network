@@ -1,0 +1,4 @@
+ts,label,student_id,status,connect_ms,login_rtt_ms,avg_rtt_ms,p95_rtt_ms,max_rtt_ms,requests,total_s,score,total
+2026-11-04 15:17:37,base_cong,Harsha,disconnected,2289.17,1787.747,6180.355,15526.029,15526.029,9,97.318,,
+2026-11-04 15:17:40,base_cong,Uday,timeout,1314.015,7091.628,13742.194,45370.173,45370.173,6,101.237,1,10
+2026-11-04 15:26:15,base_cong,Suraj,timeout,5541.474,,,,,0,615.652,,

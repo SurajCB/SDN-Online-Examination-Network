@@ -1,0 +1,11 @@
+label                        clients  finished  connect_ms  avg_rtt_ms  p95_rtt_ms  max_rtt_ms     jain
+-------------------------------------------------------------------------------------------------------
+base_idle                          3         3       42.91       55.22      249.77      458.37    0.807
+base_cong                          3         2     1801.59     9961.27    30448.10    45370.17    0.874
+sdn_idle                           3         3       39.16       76.92      396.85     1021.76    0.626
+sdn_cong                           3         3       38.42       16.20       69.61      171.69    0.695
+plot saved to results/rtt.png
+base_idle 10 / 10 []
+base_cong 9 / 10 ['T11']
+sdn_idle 10 / 10 []
+sdn_cong 9 / 10 ['T11']
