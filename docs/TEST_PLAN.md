@@ -55,6 +55,7 @@ Terminal 1: `./scripts/run_controller.sh`  ·  Terminal 2: `./scripts/run_portal
 | W7 | `./scripts/run_public.sh`, open the student link on a phone using mobile data | Seat picker loads; picking a seat and logging in works; the console shows the student |
 | W8 | Open the console link on another device | Password page; wrong password refused; correct password opens all 5 tabs |
 | W9 | Console → Testing tab | Live checks all PASS while the exam is running |
+| W11 | 3 wrong passwords on Seat 1 from a phone, then pick Seat 2 on the same phone | "Device blocked" on every seat; Unblock on the console frees it |
 | W10 | View source of the seat picker and exam page, and open `/seats/api` | No IP addresses, host names, server address or student names |
 
 ## Manual checks for the viva

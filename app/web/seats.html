@@ -41,6 +41,7 @@ h1{font-size:22px;margin:0 0 4px}
 <h1>Choose your exam seat</h1>
 <p class="muted">Pick the seat number your examiner gave you. Each seat is a computer inside the SDN-controlled exam network, and your exam traffic travels through the virtual switches from that seat.</p>
 <div id="full" class="alert" hidden>All seats are taken right now. Wait for one to become free.</div>
+<div id="devblock" class="alert" hidden>This device is blocked after 3 failed logins. Ask the examiner to unblock it.</div>
 
 <div class="grid" id="seats"></div>
 <p class="note">Seats show "In use" while someone is taking the exam there. Press "Finish &amp; log out" at the end to free your seat.</p>
@@ -53,11 +54,12 @@ async function load() {
   try {
     const d = await (await fetch("/seats/api")).json();
     document.getElementById("title").textContent = d.title;
+    document.getElementById("devblock").hidden = !d.device_blocked;
     document.getElementById("seats").innerHTML = d.seats.map((s) => {
       const guest = !s.registered;
       const name = esc(s.label);
       const login = guest ? "Not registered for the exam - the SDN will block it" : "Assigned seat · log in with the username and password from your examiner";
-      const usable = s.state === "free";
+      const usable = s.state === "free" && !d.device_blocked;
       return "<div class='seat" + (guest ? " guest" : "") + "'><div class='row'><b>" + name + "</b><span class='st " + s.state + "'>" + LABEL[s.state] + "</span></div>" +
         "<span class='login'>" + login + "</span>" +
         "<a class='take" + (usable ? "" : " off") + "' href='/seats/pick?seat=" + encodeURIComponent(s.id) + "'>" + (usable ? "Take this seat" : "Not available") + "</a></div>";

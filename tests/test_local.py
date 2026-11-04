@@ -204,7 +204,8 @@ class PortalTests(unittest.TestCase):
                               "--port", str(cls.EXAM_PORT), "--listen", "127.0.0.1", "--http-port", str(cls.WEB_PORT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT),
             subprocess.Popen([sys.executable, os.path.join(BASE, "app", "gateway.py"), "--listen", "127.0.0.1", "--students", FIXTURE,
-                              "--http-port", str(cls.GW_PORT), "--seat-map", "st2=127.0.0.1:%d" % cls.WEB_PORT],
+                              "--http-port", str(cls.GW_PORT), "--seat-map", "st2=127.0.0.1:%d" % cls.WEB_PORT,
+                              "--controller", "http://127.0.0.1:1"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT),
             subprocess.Popen([sys.executable, os.path.join(BASE, "app", "admin_portal.py"), "--listen", "127.0.0.1", "--students", FIXTURE,
                               "--http-port", str(cls.CONSOLE_PORT), "--controller", "http://127.0.0.1:1",
@@ -280,8 +281,16 @@ class PortalTests(unittest.TestCase):
         conn.request("GET", "/seats/pick?seat=2")
         r = conn.getresponse()
         r.read()
+        dev = r.getheader("Set-Cookie").split(";")[0]
+        self.assertTrue(dev.startswith("dev="))
+        self.assertEqual(r.getheader("Location"), "/seats/pick?seat=2")
+        conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
+        conn.request("GET", "/seats/pick?seat=2", headers={"Cookie": dev})
+        r = conn.getresponse()
+        r.read()
         cookie = r.getheader("Set-Cookie").split(";")[0]
         self.assertEqual(cookie, "seat=2")
+        cookie = dev + "; " + cookie
         conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
         conn.request("GET", "/", headers={"Cookie": cookie})
         resp = conn.getresponse()
@@ -296,6 +305,36 @@ class PortalTests(unittest.TestCase):
         state = json.loads(conn.getresponse().read().decode())
         self.assertNotIn("seat", state)
         self.assertNotIn("server", state)
+
+    def test_device_blocked_across_seats(self):
+        import http.client
+
+        def call(method, path, cookie="", body=None):
+            conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=10)
+            headers = {"Cookie": cookie} if cookie else {}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
+            r = conn.getresponse()
+            return r, r.read().decode()
+
+        r, _ = call("GET", "/seats")
+        dev = r.getheader("Set-Cookie").split(";")[0]
+        self.assertTrue(dev.startswith("dev="))
+        r, _ = call("GET", "/seats/pick?seat=2", dev)
+        jar = dev + "; " + r.getheader("Set-Cookie").split(";")[0]
+        codes = []
+        for _ in range(3):
+            r, text = call("POST", "/api/login", jar, {"student_id": "S101", "pin": "wrong"})
+            codes.append(r.status)
+        self.assertEqual(codes[-1], 403)
+        self.assertIn("blocked", json.loads(text)["error"])
+        r, page = call("GET", "/seats/pick?seat=1", dev)
+        self.assertIn("Device blocked", page)
+        r, text = call("GET", "/seats/api", dev)
+        self.assertTrue(json.loads(text)["device_blocked"])
+        r, text = call("GET", "/seats/api")
+        self.assertFalse(json.loads(text)["device_blocked"])
 
     def test_console_requires_password(self):
         import http.client

@@ -210,6 +210,7 @@ An intruder, meaning any host or person that is not part of the exam, should not
 |---|---|
 | No addresses on public pages | The seat picker, the gateway banner and the exam page show only "Seat 1, 2, 3". No IP addresses, host names or exam-server address appear in the HTML or the JSON APIs. |
 | No student names | Seats no longer say who they are reserved for, and the username is not pre-filled, so an outsider cannot collect usernames to guess passwords. |
+| Device lockout | After 3 failed logins from one browser, on any seat, the gateway blocks that device on every seat and asks the controller to block the seat. When the examiner clicks Unblock on the console, the device is freed too. |
 | Generic errors | Connection errors no longer include addresses or system error text. |
 | HTTP hardening | Every response sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. |
 | Examiner-only details | Full host details remain available only on the password-protected Server Console. |
