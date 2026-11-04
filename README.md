@@ -112,7 +112,7 @@ flowchart TD
   A[Packet arrives at an OVS switch] --> B{Flow rule matches?}
   B -- yes --> B1[Switch forwards or drops it itself]
   B -- no --> C[Packet-in to Ryu controller]
-  S[Exam server signals<br/>exam_start, auth_fail, submit] -. UDP to 10.0.0.254 .-> C
+  S[Exam server signals<br/>exam_start, auth_fail, submit] -.->|UDP signals| C
   C --> D{Exam running?}
   D -- no --> D1[Normal learning switch]
   D -- yes --> E{Registered seat, server<br/>or console host?}
@@ -130,15 +130,40 @@ The controller sees only the first packet of each new connection. It decides onc
   <img src="docs/images/controller-flowchart.png" alt="Controller decision flowchart as shown on the Server Console" width="640">
 </p>
 
+### Network topology
+
+```mermaid
+flowchart TB
+  srv["srv · 10.0.0.1<br/>exam server"]
+  bg["bg · 10.0.0.99<br/>background traffic"]
+  ctrl{{"Ryu controller<br/>OpenFlow 1.3"}}
+  s1(("s1<br/>core"))
+  s2(("s2<br/>Lab A"))
+  s3(("s3<br/>Lab B"))
+  srv --- s1
+  bg --- s1
+  ctrl -.-|"OpenFlow to s1, s2, s3"| s1
+  s1 ===|"10 Mbps · q0 + q1"| s2
+  s1 ===|"10 Mbps · q0 + q1"| s3
+  s2 --- st1["st1 · 10.0.0.11<br/>Seat 1"]
+  s2 --- st2["st2 · 10.0.0.12<br/>Seat 2"]
+  s2 --- st3["st3 · 10.0.0.13<br/>Seat 3"]
+  s2 --- intr["intr · 10.0.0.66<br/>intruder"]
+  s2 --- sink["sink · 10.0.0.98<br/>traffic sink"]
+  s2 --- pc["desktop · 10.0.0.200<br/>console host"]
+  s3 --- st4["st4 · 10.0.0.14<br/>unassigned"]
+  s3 --- st5["st5 · 10.0.0.15<br/>unassigned"]
+  s3 --- st6["st6 · 10.0.0.16<br/>unassigned"]
+  classDef sw fill:#eef3fa,stroke:#1f5fae,stroke-width:2px;
+  classDef bad fill:#fde8e7,stroke:#b42318;
+  classDef ok fill:#e3f6e9,stroke:#0a7d32;
+  class s1,s2,s3 sw;
+  class intr bad;
+  class srv ok;
 ```
-                    srv 10.0.0.1 (exam server)      bg 10.0.0.99 (background traffic)
-                              \                    /
-                                    s1 (core)
-                     10 Mbps, q0/q1 /         \ 10 Mbps, q0/q1
-                         s2 (Lab A)             s3 (Lab B)
-     st1 .11  st2 .12  st3 .13  intr .66        st4 .14  st5 .15  st6 .16
-     sink .98  desktop .200                     (seats not assigned to the exam)
-```
+
+Host links run at 100 Mbps; the two core links are limited to 10 Mbps so congestion can be created on purpose. Each core link has two queues: **q0** best effort and **q1** for exam traffic (at least 8 Mbps).
+
 
 ## How the application and the network interact
 

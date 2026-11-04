@@ -50,7 +50,7 @@ flowchart TD
   A[Packet arrives at an OVS switch] --> B{Flow rule matches?}
   B -- yes --> B1[Switch forwards or drops it itself]
   B -- no --> C[Packet-in to Ryu controller]
-  S[Exam server signals<br/>exam_start, auth_fail, submit] -. UDP to 10.0.0.254 .-> C
+  S[Exam server signals<br/>exam_start, auth_fail, submit] -.->|UDP signals| C
   C --> D{Exam running?}
   D -- no --> D1[Normal learning switch]
   D -- yes --> E{Registered seat, server<br/>or console host?}
@@ -65,6 +65,8 @@ flowchart TD
 The controller sees only the first packet of each new connection. It decides once and installs a rule, and the switch handles the rest of the connection on its own.
 
 ### Topology
+
+![Network topology](images/topology.png)
 
 ```
                  +---------------- Ryu controller (127.0.0.1:6653, REST :8080)
