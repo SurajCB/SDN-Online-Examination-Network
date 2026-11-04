@@ -62,6 +62,7 @@ class ExamServer:
         self.lookup = {sid.strip().lower(): s for sid, s in self.students.items()}
         self.sessions = {}
         self.auth_failures = {}
+        self.account_failures = {}
         self.lock = threading.Lock()
         self.csv_lock = threading.Lock()
         self.slots = threading.BoundedSemaphore(args.max_clients)
@@ -194,13 +195,20 @@ class ExamServer:
             student = self.lookup.get(sid.lower())
             if student:
                 sid = student["id"]
+            client = msg.get("client") if isinstance(msg.get("client"), str) and len(msg.get("client")) <= 64 else None
+            wait = self.account_wait(sid)
+            if wait:
+                P.send_msg(conn, P.make(P.LOGIN_FAIL, reason="too many failed attempts for this account, wait %d s" % wait,
+                                        echo_t=msg.get("t")))
+                continue
             if not student or student.get("pin") != str(msg.get("pin", "")):
-                self.record_auth_failure(ip, sid)
+                self.record_auth_failure(ip, sid, client)
+                self.record_account_failure(sid)
                 P.send_msg(conn, P.make(P.LOGIN_FAIL, reason="invalid credentials", echo_t=msg.get("t")))
                 continue
             if self.args.strict_seat and student.get("ip") and student["ip"] != ip:
-                self.record_auth_failure(ip, sid)
-                P.send_msg(conn, P.make(P.LOGIN_FAIL, reason="login from unassigned seat %s" % ip,
+                self.record_auth_failure(ip, sid, client)
+                P.send_msg(conn, P.make(P.LOGIN_FAIL, reason="this account must use its assigned seat",
                                         echo_t=msg.get("t")))
                 continue
             with self.lock:
@@ -223,7 +231,8 @@ class ExamServer:
                 session.connected = True
                 session.status = "active"
                 session.ip = ip
-                self.auth_failures.pop(ip, None)
+                self.auth_failures.pop(self.failure_key(ip, client), None)
+                self.account_failures.pop(sid.lower(), None)
             log("[AUTH] %s (%s) logged in from %s%s" % (sid, session.name, ip, " [RESUMED]" if resumed else ""))
             P.send_msg(conn, P.make(P.LOGIN_OK, name=session.name, exam_title=self.title,
                                     total_questions=len(session.order), duration=self.args.duration,
@@ -234,12 +243,37 @@ class ExamServer:
         log("[AUTH] %s exceeded login attempts" % ip)
         return None
 
-    def record_auth_failure(self, ip, sid):
+    def account_wait(self, sid):
         with self.lock:
-            count = self.auth_failures.get(ip, 0) + 1
-            self.auth_failures[ip] = count
-        log("[AUTH] failed login #%d from %s (id=%r)" % (count, ip, sid))
-        self.sdn.send("auth_fail", ip=ip, count=count, student_id=sid)
+            entry = self.account_failures.get(sid.lower())
+        if not entry:
+            return 0
+        return max(0, int(entry[1] - time.time() + 0.999))
+
+    def record_account_failure(self, sid):
+        with self.lock:
+            count, until = self.account_failures.get(sid.lower(), (0, 0))
+            count += 1
+            if count % self.args.account_lock_after == 0:
+                until = time.time() + self.args.account_lock_seconds
+                log("[AUTH] account %r paused for %ds after %d failed attempts" % (sid, self.args.account_lock_seconds, count))
+            self.account_failures[sid.lower()] = (count, until)
+
+    @staticmethod
+    def failure_key(ip, client):
+        return "%s/%s" % (ip, client[:8]) if client else ip
+
+    def record_auth_failure(self, ip, sid, client=None):
+        key = self.failure_key(ip, client)
+        with self.lock:
+            count = self.auth_failures.get(key, 0) + 1
+            self.auth_failures[key] = count
+        if client:
+            log("[AUTH] failed login #%d from device %s on seat %s (id=%r)" % (count, client[:8], ip, sid))
+            self.sdn.send("auth_fail", ip=ip, count=count, student_id=sid, device=client[:8])
+        else:
+            log("[AUTH] failed login #%d from %s (id=%r)" % (count, ip, sid))
+            self.sdn.send("auth_fail", ip=ip, count=count, student_id=sid)
 
     def send_question(self, conn, session, echo_t=None):
         qid = session.order[session.index]
@@ -368,6 +402,8 @@ def parse_args():
     ap.add_argument("--backlog", type=int, default=64)
     ap.add_argument("--login-timeout", type=float, default=30.0)
     ap.add_argument("--max-login-attempts", type=int, default=3)
+    ap.add_argument("--account-lock-after", type=int, default=5)
+    ap.add_argument("--account-lock-seconds", type=int, default=60)
     ap.add_argument("--shuffle", action="store_true")
     ap.add_argument("--strict-seat", action="store_true")
     ap.add_argument("--no-sdn", action="store_true")

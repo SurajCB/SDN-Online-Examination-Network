@@ -34,72 +34,86 @@ class Seat:
 
 
 class DeviceGuard:
-    """Blocks a browser (device) after repeated failed logins, whichever seat it moves to."""
+    """Blocks a browser after repeated failed logins on any seat, without blocking the seat itself.
 
-    def __init__(self, max_failures=3, controller="http://127.0.0.1:8080", log=print):
+    The seat machine stays usable, so the real student can still log in from their own phone.
+    A public IP that keeps failing with many different browsers is blocked as well.
+    Blocks last until the examiner unblocks them on the Server Console or a new exam run starts.
+    """
+
+    def __init__(self, max_failures=3, max_ip_failures=10, controller="http://127.0.0.1:8080", log=print):
         self.max_failures = max_failures
+        self.max_ip_failures = max_ip_failures
         self.controller = controller.rstrip("/") if controller else None
         self.log = log
         self.lock = threading.Lock()
         self.failures = {}
+        self.ip_failures = {}
         self.bans = {}
-        self._cache = (0.0, None)
+        self.ip_bans = {}
+        self.run = None
+        self._checked = 0.0
 
-    def _controller_blocked(self):
-        if not self.controller:
-            return None
-        now = time.time()
-        if now - self._cache[0] < 2:
-            return self._cache[1]
+    def _sync_run(self):
+        if not self.controller or time.time() - self._checked < 3:
+            return
+        self._checked = time.time()
         try:
             with urllib.request.urlopen(self.controller + "/exam/status", timeout=1.5) as r:
-                blocked = set(json.loads(r.read().decode()).get("blocked", {}))
+                run = json.loads(r.read().decode()).get("run")
         except (OSError, ValueError):
-            blocked = None
-        self._cache = (now, blocked)
-        return blocked
-
-    def _block_seat(self, ip):
-        if not self.controller:
             return
-        try:
-            req = urllib.request.Request(self.controller + "/exam/block/" + ip, method="POST", data=b"")
-            urllib.request.urlopen(req, timeout=1.5).read()
-        except OSError:
-            pass
-
-    def is_blocked(self, dev):
         with self.lock:
-            ban = self.bans.get(dev)
-        if not ban:
-            return False
-        blocked = self._controller_blocked()
-        if blocked is None:
-            return True
-        if ban["ip"] in blocked:
-            ban["seen"] = True
-            return True
-        if ban["seen"]:
-            with self.lock:
-                self.bans.pop(dev, None)
-                self.failures.pop(dev, None)
-            self.log("[GATEWAY] device unblocked after the examiner unblocked %s" % ban["ip"])
-            return False
-        self._block_seat(ban["ip"])
-        return True
+            if run and self.run and run != self.run:
+                self.failures.clear()
+                self.ip_failures.clear()
+                self.bans.clear()
+                self.ip_bans.clear()
+                self.log("[GATEWAY] new exam run: device blocks cleared")
+            if run:
+                self.run = run
 
-    def record(self, dev, seat, ok):
+    def is_blocked(self, dev, ip):
+        self._sync_run()
+        with self.lock:
+            return (dev in self.bans) or (ip in self.ip_bans)
+
+    def record(self, dev, ip, seat, ok):
         with self.lock:
             if ok:
                 self.failures.pop(dev, None)
                 return
             count = self.failures.get(dev, 0) + 1
             self.failures[dev] = count
-            if count < self.max_failures:
-                return
-            self.bans[dev] = {"ip": seat.ip, "since": time.time(), "seen": False}
-        self.log("[GATEWAY] device blocked after %d failed logins (last seat %s)" % (count, seat.label))
-        self._block_seat(seat.ip)
+            ip_count = self.ip_failures.get(ip, 0) + 1
+            self.ip_failures[ip] = ip_count
+            now = time.strftime("%H:%M:%S")
+            if count >= self.max_failures and dev not in self.bans:
+                self.bans[dev] = {"id": dev[:8], "seat": seat.label, "since": now, "failures": count, "ip": ip}
+                self.log("[GATEWAY] device %s blocked after %d failed logins (%s)" % (dev[:8], count, seat.label))
+            if ip_count >= self.max_ip_failures and ip not in self.ip_bans:
+                self.ip_bans[ip] = {"since": now, "failures": ip_count}
+                self.log("[GATEWAY] public address blocked after %d failed logins" % ip_count)
+
+    def listing(self):
+        with self.lock:
+            devices = [dict(b) for b in self.bans.values()]
+            addresses = [dict(b, ip=ip) for ip, b in self.ip_bans.items()]
+        return {"devices": devices, "addresses": addresses}
+
+    def unblock(self, ident):
+        with self.lock:
+            for dev in [d for d, b in self.bans.items() if b["id"] == ident]:
+                ip = self.bans.pop(dev)["ip"]
+                self.failures.pop(dev, None)
+                self.ip_failures[ip] = 0
+                self.log("[GATEWAY] examiner unblocked device %s" % ident)
+                return True
+            if ident in self.ip_bans:
+                self.ip_bans.pop(ident)
+                self.ip_failures.pop(ident, None)
+                return True
+        return False
 
 
 DEV_RE = re.compile(r"^[0-9a-f]{24}$")
@@ -131,10 +145,12 @@ def redirect(location, **extra):
     return 302, "text/plain; charset=utf-8", b"", headers
 
 
-def forward(seat, method, path, body=b"", timeout=20):
+def forward(seat, method, path, body=b"", timeout=20, device_id=None):
     conn = http.client.HTTPConnection(seat.host, seat.port, timeout=timeout)
     try:
         headers = {"Content-Type": "application/json"} if body else {}
+        if device_id:
+            headers["X-Exam-Device"] = device_id
         conn.request(method, path, body=body or None, headers=headers)
         r = conn.getresponse()
         return r.status, r.getheader("Content-Type", "text/plain"), r.read()
@@ -166,7 +182,7 @@ def all_status(seats):
     return result
 
 
-def make_handler(seats, title, guard=None):
+def make_handler(seats, title, guard=None, admin_token=None):
     guard = guard or DeviceGuard(controller=None)
     by_name = {s.public: s for s in seats}
     with open(os.path.join(WEB, "seats.html"), encoding="utf-8") as f:
@@ -195,14 +211,34 @@ def make_handler(seats, title, guard=None):
                              "border:1px solid #f1c4c0;background:#fde8e7;color:#b42318;border-radius:14px'>"
                              "<h2 style='margin-top:0'>Device blocked</h2><p>%s</p></div>" % BLOCKED_MSG)
 
+    def client_ip(req):
+        return req.headers.get("cf-connecting-ip") or (req.client[0] if req.client else "")
+
+    def is_admin(req):
+        if req.headers.get("cf-connecting-ip") or req.headers.get("x-forwarded-for"):
+            return False
+        if not req.client or req.client[0] not in ("127.0.0.1", "::1"):
+            return False
+        return bool(admin_token) and secrets.compare_digest(req.headers.get("x-gateway-token", ""), admin_token)
+
     def handler(req):
+        if req.path.startswith("/seats/admin/"):
+            if not is_admin(req):
+                return json_response({"error": "forbidden"}, 403)
+            if req.path == "/seats/admin/blocked":
+                return json_response(guard.listing())
+            if req.path == "/seats/admin/unblock" and req.method == "POST":
+                ident = str(req.json().get("id", "")).strip()
+                return json_response({"ok": guard.unblock(ident), **guard.listing()})
+            return json_response({"error": "not found"}, 404)
         dev = device(req)
+        ip = client_ip(req)
         new_dev = None
         if not dev and req.path in ("/seats", "/seats/api", "/seats/pick"):
             dev = new_dev = secrets.token_hex(12)
         if req.path == "/seats/api":
             states = all_status(seats)
-            resp = json_response({"title": title, "device_blocked": bool(dev and guard.is_blocked(dev)), "seats": [
+            resp = json_response({"title": title, "device_blocked": bool(dev and guard.is_blocked(dev, ip)), "seats": [
                 {"id": s.public, "label": s.label, "state": states[s.name], "registered": bool(s.student)}
                 for s in seats]})
             return resp + (dev_cookie(new_dev),) if new_dev else resp
@@ -212,7 +248,7 @@ def make_handler(seats, title, guard=None):
         if req.path == "/seats/pick" and new_dev:
             return redirect("/seats/pick?seat=" + urllib.parse.quote(req.query.get("seat", "")),
                             Set_Cookie=dev_cookie(new_dev)["Set-Cookie"])
-        if dev and guard.is_blocked(dev):
+        if dev and guard.is_blocked(dev, ip):
             if req.path.startswith("/api/"):
                 return json_response({"stage": "login", "error": BLOCKED_MSG, "student": None, "question": None,
                                       "result": None}, 403)
@@ -237,7 +273,7 @@ def make_handler(seats, title, guard=None):
                                       "student": None, "question": None, "result": None}, 409)
             return redirect("/seats")
         try:
-            status, ctype, body = forward(seat, req.method, req.path, req.body)
+            status, ctype, body = forward(seat, req.method, req.path, req.body, device_id=dev)
         except (OSError, http.client.HTTPException) as exc:
             if req.path.startswith("/api/"):
                 return json_response({"stage": "login",
@@ -253,12 +289,12 @@ def make_handler(seats, title, guard=None):
             except (UnicodeDecodeError, ValueError):
                 state = {}
             if state.get("error") == "invalid credentials":
-                guard.record(dev, seat, ok=False)
-                if guard.is_blocked(dev):
+                guard.record(dev, ip, seat, ok=False)
+                if guard.is_blocked(dev, ip):
                     state["error"] = BLOCKED_MSG
                     return json_response(state, 403)
             elif state.get("stage") in ("exam", "result"):
-                guard.record(dev, seat, ok=True)
+                guard.record(dev, ip, seat, ok=True)
         if ctype.startswith("text/html"):
             bar = ("<div style=\"background:#1f5fae;color:#fff;font:13px system-ui,sans-serif;padding:8px 16px;"
                    "display:flex;gap:12px;justify-content:center;flex-wrap:wrap\"><span>Exam gateway · <b>%s</b>"
@@ -276,11 +312,19 @@ def main():
     ap.add_argument("--seat-map", default=None)
     ap.add_argument("--controller", default="http://127.0.0.1:8080")
     ap.add_argument("--max-login-failures", type=int, default=3)
+    ap.add_argument("--max-ip-failures", type=int, default=10)
     args = ap.parse_args()
+    os.makedirs(os.path.join(BASE, "logs"), exist_ok=True)
+    token_file = os.path.join(BASE, "logs", "gateway_admin_token.txt")
+    admin_token = secrets.token_hex(16)
+    with open(token_file, "w") as f:
+        f.write(admin_token)
+    os.chmod(token_file, 0o600)
     seats = build_seats(args)
     with open(os.path.join(BASE, "data", "questions.json"), encoding="utf-8") as f:
         title = json.load(f).get("title", "Online Examination")
-    httpd = HTTPServer(args.listen, args.http_port, make_handler(seats, title, DeviceGuard(args.max_login_failures, args.controller)))
+    httpd = HTTPServer(args.listen, args.http_port, make_handler(seats, title, DeviceGuard(args.max_login_failures, args.max_ip_failures, args.controller),
+                                                            admin_token))
     print("[GATEWAY] http://localhost:%d -> %s" % (args.http_port, ", ".join(
         "%s=%s:%d" % (s.name, s.host, s.port) for s in seats)), flush=True)
     try:

@@ -150,6 +150,15 @@ class ServerTests(unittest.TestCase):
         fails = [e for e in self.ctrl.events if e["event"] == "auth_fail"]
         self.assertGreaterEqual(max(e["count"] for e in fails), 3)
 
+    def test_4b_account_paused_after_repeated_failures(self):
+        for _ in range(5):
+            s, reply = login("S104", "0000")
+            s.close()
+        s, reply = login("S104", "1114")
+        s.close()
+        self.assertEqual(reply["type"], P.LOGIN_FAIL)
+        self.assertIn("wait", reply["reason"])
+
     def test_5_resume_after_disconnect(self):
         s, reply = login("S105", "1115")
         self.assertEqual(reply["type"], P.LOGIN_OK)
@@ -318,11 +327,13 @@ class PortalTests(unittest.TestCase):
             r = conn.getresponse()
             return r, r.read().decode()
 
-        r, _ = call("GET", "/seats")
-        dev = r.getheader("Set-Cookie").split(";")[0]
-        self.assertTrue(dev.startswith("dev="))
-        r, _ = call("GET", "/seats/pick?seat=2", dev)
-        jar = dev + "; " + r.getheader("Set-Cookie").split(";")[0]
+        def new_device(seat):
+            r, _ = call("GET", "/seats")
+            dev = r.getheader("Set-Cookie").split(";")[0]
+            r, _ = call("GET", "/seats/pick?seat=%s" % seat, dev)
+            return dev, dev + "; " + r.getheader("Set-Cookie").split(";")[0]
+
+        dev, jar = new_device(2)
         codes = []
         for _ in range(3):
             r, text = call("POST", "/api/login", jar, {"student_id": "S101", "pin": "wrong"})
@@ -333,7 +344,28 @@ class PortalTests(unittest.TestCase):
         self.assertIn("Device blocked", page)
         r, text = call("GET", "/seats/api", dev)
         self.assertTrue(json.loads(text)["device_blocked"])
-        r, text = call("GET", "/seats/api")
+
+        _, owner = new_device(2)
+        r, text = call("GET", "/seats/api", owner.split(";")[0])
+        self.assertFalse(json.loads(text)["device_blocked"])
+        r, text = call("POST", "/api/login", owner, {"student_id": "S102", "pin": "1112"})
+        self.assertEqual(json.loads(text)["stage"], "exam", text)
+        call("POST", "/api/logout", owner, {})
+
+        with open(os.path.join(BASE, "logs", "gateway_admin_token.txt")) as f:
+            token = f.read().strip()
+        conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
+        conn.request("GET", "/seats/admin/blocked", headers={"X-Gateway-Token": token, "Cf-Connecting-Ip": "1.2.3.4"})
+        self.assertEqual(conn.getresponse().status, 403)
+        conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
+        conn.request("GET", "/seats/admin/blocked", headers={"X-Gateway-Token": token})
+        listing = json.loads(conn.getresponse().read().decode())
+        self.assertEqual(len(listing["devices"]), 1)
+        conn = http.client.HTTPConnection("127.0.0.1", self.GW_PORT, timeout=5)
+        conn.request("POST", "/seats/admin/unblock", body=json.dumps({"id": listing["devices"][0]["id"]}),
+                     headers={"X-Gateway-Token": token, "Content-Type": "application/json"})
+        self.assertTrue(json.loads(conn.getresponse().read().decode())["ok"])
+        r, text = call("GET", "/seats/api", dev)
         self.assertFalse(json.loads(text)["device_blocked"])
 
     def test_console_requires_password(self):

@@ -320,6 +320,11 @@ svg text{font-family:system-ui,sans-serif}
 <form class="inline" id="blockForm"><input id="blockIp" placeholder="IP to block, e.g. 10.0.0.12"><button class="primary" type="submit">Block</button></form>
 <div class="err" id="blockMsg"></div>
 </div>
+<div class="card">
+<h2>Blocked devices</h2>
+<p class="muted" style="font-size:13px;margin-top:0">Phones or browsers that failed to log in 3 times on any seat. The seat itself stays open, so the real student can still log in.</p>
+<div id="iDevices"></div>
+</div>
 </div>
 </div>
 </section>
@@ -500,7 +505,8 @@ function describe(e) {
     case "exam_end": return ["", "App", "Exam server sent exam_end", "Exam mode OFF · blocks and queues cleared", ""];
     case "student_login": return ["", "App", e.student + " logged in from " + e.ip, "Seat tracked as active", ""];
     case "student_submit": return ["", "App", e.student + " submitted (" + e.score + ", " + e.status + ")", "Result recorded", "good"];
-    case "auth_fail": return ["", "App", "Failed login #" + e.count + " from " + e.ip, e.count >= 3 ? "Threshold reached" : "Counting (" + e.count + "/3)", "warn"];
+    case "auth_fail": return e.device ? ["", "App", "Failed login #" + e.count + " from device " + e.device + " on " + e.ip, e.count >= 3 ? "Device blocked by the gateway; seat stays open" : "Counting (" + e.count + "/3)", "warn"]
+      : ["", "App", "Failed login #" + e.count + " from " + e.ip, e.count >= 3 ? "Threshold reached" : "Counting (" + e.count + "/3)", "warn"];
     case "blocked": return ["", /whitelist/.test(e.reason) ? "Network" : /REST/.test(e.reason) ? "Examiner" : "App", /whitelist/.test(e.reason) ? "TCP SYN to :5000 from unlisted " + e.ip : /REST/.test(e.reason) ? "Examiner pressed Block" : e.reason + " from " + e.ip, "Drop rule (priority 300) on all switches for " + e.ip, "bad"];
     case "unblocked": return ["", "Examiner", "Unblock " + e.ip, "Drop rules removed", "good"];
     case "congestion": return ["", "Network", "Other traffic " + e.other_mbps + " Mbps on s" + e.dpid, e.action, "warn"];
@@ -521,6 +527,13 @@ function renderIntegration(d) {
   const ips = Object.keys(d.blocked);
   $("iBlocked").innerHTML = ips.length ? ips.map((ip) => "<div class='row'><div><span class='mono'>" + esc(ip) + "</span><small>" + esc(d.blocked[ip].reason) + " · since " + esc(d.blocked[ip].since) + "</small></div><button type='button' data-ip='" + esc(ip) + "'>Unblock</button></div>").join("") : "<div class='empty'>No hosts blocked.</div>";
   $("iBlocked").querySelectorAll("button").forEach((b) => b.onclick = () => act("/api/unblock", b.dataset.ip));
+  const g = d.blocked_devices;
+  const devs = g ? g.devices.map((x) => ({ id: x.id, label: "Device " + x.id, info: x.failures + " failed logins on " + x.seat + " · since " + x.since }))
+    .concat(g.addresses.map((x) => ({ id: x.ip, label: "Network address", info: x.failures + " failed logins from many browsers · since " + x.since }))) : [];
+  $("iDevices").innerHTML = !g ? "<div class='empty'>Public links are not running.</div>" : devs.length ? devs.map((x) => "<div class='row'><div><span class='mono'>" + esc(x.label) + "</span><small>" + esc(x.info) + "</small></div><button type='button' data-id='" + esc(x.id) + "'>Unblock</button></div>").join("") : "<div class='empty'>No devices blocked.</div>";
+  $("iDevices").querySelectorAll("button").forEach((b) => b.onclick = async () => {
+    try { const r = await post("/api/device_unblock", { id: b.dataset.id }); if (!r.error) { lastOverview = r; renderIntegration(r); } } catch (e) {}
+  });
 }
 
 async function act(path, ip) {

@@ -55,6 +55,8 @@ def console_password():
 
 
 class Console:
+    gateway_url = "http://127.0.0.1:7000"
+
     def __init__(self, controller, students_file, results_dir, password):
         self.controller = controller.rstrip("/")
         self.students_file = students_file
@@ -158,7 +160,23 @@ class Console:
             "events": list(data.get("/exam/events", []))[-60:],
             "traffic": [dict(dpid=int(k), **v) for k, v in sorted(flows.items(), key=lambda kv: int(kv[0]))],
             "server_up": bool(server and server.get("fresh")), "links": self.links(),
+            "blocked_devices": self.gateway("/seats/admin/blocked"),
         }
+
+    def gateway(self, path, body=None):
+        try:
+            with open(os.path.join(LOGS, "gateway_admin_token.txt")) as f:
+                token = f.read().strip()
+        except OSError:
+            return None
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.gateway_url + path, data=data, method="POST" if data else "GET",
+                                     headers={"X-Gateway-Token": token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=1.5) as r:
+                return json.loads(r.read().decode())
+        except (OSError, ValueError):
+            return None
 
     def server_page(self):
         st = self.server_status()
@@ -244,6 +262,13 @@ def make_handler(console):
                     {"Set-Cookie": "console=; Path=/; Max-Age=0"})
         if req.method == "GET" and req.path in pages:
             return json_response(pages[req.path]())
+        if req.method == "POST" and req.path == "/api/device_unblock":
+            ident = str(req.json().get("id", "")).strip()
+            if not ident or len(ident) > 64:
+                return json_response({"error": "Missing device id"}, 400)
+            if console.gateway("/seats/admin/unblock", {"id": ident}) is None:
+                return json_response({"error": "Public gateway is not running"}, 502)
+            return json_response(console.overview())
         if req.method == "POST" and req.path in ("/api/block", "/api/unblock"):
             ip = str(req.json().get("ip", "")).strip()
             parts = ip.split(".")
@@ -265,8 +290,10 @@ def main():
     ap.add_argument("--http-port", type=int, default=9000)
     ap.add_argument("--students", default=os.path.join(BASE, "data", "students.json"))
     ap.add_argument("--results-dir", default=os.path.join(BASE, "results"))
+    ap.add_argument("--gateway", default="http://127.0.0.1:7000")
     args = ap.parse_args()
     console = Console(args.controller, args.students, args.results_dir, console_password())
+    console.gateway_url = args.gateway.rstrip("/")
     httpd = HTTPServer(args.listen, args.http_port, make_handler(console))
     print("[CONSOLE] server console on http://localhost:%d  password: %s" % (args.http_port, console.password),
           flush=True)

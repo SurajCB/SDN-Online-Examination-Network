@@ -201,6 +201,13 @@ class ControllerTests(unittest.TestCase):
         self.packet_in(signal_packet({"event": "auth_fail", "token": C.TOKEN, "ip": "10.0.0.11", "count": 3}), 1)
         self.assertIn("10.0.0.11", self.app.blocked)
 
+    def test_device_failures_do_not_block_the_seat(self):
+        self.start_exam()
+        for n in (1, 2, 3, 4):
+            self.packet_in(signal_packet({"event": "auth_fail", "token": C.TOKEN, "ip": "10.0.0.11", "count": n,
+                                          "device": "abcd1234"}), 1)
+        self.assertNotIn("10.0.0.11", self.app.blocked)
+
     def test_exam_end_unblocks(self):
         self.start_exam()
         self.app.block_ip("10.0.0.66", "test")

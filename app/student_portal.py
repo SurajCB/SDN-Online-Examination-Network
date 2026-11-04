@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import select
 import socket
 import sys
@@ -100,7 +101,7 @@ class ExamBridge:
                     self.error = "Connection to the exam server was lost. Log in again to resume."
             return self.state()
 
-    def login(self, sid, pin):
+    def login(self, sid, pin, client=None):
         def run():
             if self.stage == "exam" and self.sock:
                 if self.student and self.student["id"] == sid:
@@ -119,7 +120,10 @@ class ExamBridge:
                 return
             P.tune_socket(self.sock)
             self.sock.settimeout(self.timeout)
-            reply = self.request(P.make(P.LOGIN, student_id=sid, pin=pin))
+            fields = dict(student_id=sid, pin=pin)
+            if client:
+                fields["client"] = client
+            reply = self.request(P.make(P.LOGIN, **fields))
             if reply["type"] != P.LOGIN_OK:
                 self.close()
                 self.error = reply.get("reason", "Login failed")
@@ -197,7 +201,9 @@ def make_handler(bridge):
             pin = str(body.get("pin", "")).strip()
             if not sid or not pin:
                 return json_response(dict(bridge.state(), error="Enter your username and password."))
-            return json_response(bridge.login(sid, pin))
+            client = req.headers.get("x-exam-device", "")
+            client = client if re.fullmatch(r"[0-9a-f]{24}", client) else None
+            return json_response(bridge.login(sid, pin, client))
         if req.path == "/api/answer":
             choice = body.get("choice")
             if choice is not None:

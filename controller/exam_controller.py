@@ -301,6 +301,10 @@ class ExamController(app_manager.RyuApp):
         elif kind == "auth_fail":
             ip = data.get("ip")
             count = int(data.get("count", 1))
+            device = data.get("device")
+            if device:
+                self.event("auth_fail", ip=ip, count=count, device=str(device)[:8])
+                return
             self.event("auth_fail", ip=ip, count=count)
             if count >= BLOCK_THRESHOLD and ip not in self.blocked:
                 self.block_ip(ip, "%d failed logins" % count)
@@ -455,7 +459,7 @@ class ExamController(app_manager.RyuApp):
 
     def status(self):
         return {"exam_active": self.exam_active, "server_ip": self.server_ip, "exam_port": self.exam_port,
-                "prioritize": PRIORITIZE, "isolation": ISOLATE, "management_ips": sorted(MGMT_IPS),
+                "prioritize": PRIORITIZE, "isolation": ISOLATE, "run": self.run_id, "management_ips": sorted(MGMT_IPS),
                 "allowed_ips": sorted(self.allowed), "blocked": self.blocked,
                 "active_students": self.active_students, "submitted": self.submitted,
                 "switches": sorted(self.datapaths.keys())}
